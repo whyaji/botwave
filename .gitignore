@@ -1,0 +1,9 @@
+# deps
+node_modules/
+.env
+
+# temp files from compression
+storage/temp/
+assitant/
+mobile/
+data/
