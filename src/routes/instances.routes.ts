@@ -4,7 +4,12 @@ import { z } from 'zod';
 
 import { db } from '@/src/db/connection';
 import { instances } from '@/src/db/schema/schema';
-import { connectInstance, disconnectInstance, getSocket } from '@/src/services/wa/instance-manager';
+import {
+  connectInstance,
+  disconnectInstance,
+  getSocket,
+  logoutInstance,
+} from '@/src/services/wa/instance-manager';
 
 import { authMiddleware } from '../common/middleware/auth.middleware';
 import { errorResponse, successResponse } from '../common/utils/response';
@@ -130,6 +135,52 @@ instancesRoutes.post('/:id/disconnect', async (c) => {
   await disconnectInstance(id);
   const [updated] = await db.select().from(instances).where(eq(instances.id, id)).limit(1);
   return successResponse(c, updated!);
+});
+
+instancesRoutes.post('/:id/logout', async (c) => {
+  const id = parseInt(c.req.param('id'), 10);
+  if (Number.isNaN(id)) {
+    return errorResponse(c, 'VALIDATION_ERROR', 'Invalid id', 400);
+  }
+  const [row] = await db.select().from(instances).where(eq(instances.id, id)).limit(1);
+  if (!row) {
+    return errorResponse(c, 'NOT_FOUND', 'Instance not found', 404);
+  }
+  try {
+    await logoutInstance(id);
+    const [updated] = await db.select().from(instances).where(eq(instances.id, id)).limit(1);
+    return successResponse(c, updated!);
+  } catch (err) {
+    return errorResponse(
+      c,
+      'INTERNAL_ERROR',
+      err instanceof Error ? err.message : 'Logout failed',
+      500
+    );
+  }
+});
+
+instancesRoutes.post('/:id/clear-cache', async (c) => {
+  const id = parseInt(c.req.param('id'), 10);
+  if (Number.isNaN(id)) {
+    return errorResponse(c, 'VALIDATION_ERROR', 'Invalid id', 400);
+  }
+  const [row] = await db.select().from(instances).where(eq(instances.id, id)).limit(1);
+  if (!row) {
+    return errorResponse(c, 'NOT_FOUND', 'Instance not found', 404);
+  }
+  try {
+    await logoutInstance(id);
+    const [updated] = await db.select().from(instances).where(eq(instances.id, id)).limit(1);
+    return successResponse(c, updated!);
+  } catch (err) {
+    return errorResponse(
+      c,
+      'INTERNAL_ERROR',
+      err instanceof Error ? err.message : 'Clear cache failed',
+      500
+    );
+  }
 });
 
 instancesRoutes.delete('/:id', async (c) => {

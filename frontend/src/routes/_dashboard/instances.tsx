@@ -56,6 +56,26 @@ function InstancesPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }),
   });
 
+  const logoutMu = useMutation({
+    mutationFn: async (id: number) => {
+      await api(`/instances/${id}/logout`, {
+        method: 'POST',
+        token: token ?? undefined,
+      });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }),
+  });
+
+  const clearCacheMu = useMutation({
+    mutationFn: async (id: number) => {
+      await api(`/instances/${id}/clear-cache`, {
+        method: 'POST',
+        token: token ?? undefined,
+      });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['instances'] }),
+  });
+
   const createMu = useMutation({
     mutationFn: async (body: { name: string; description?: string }) => {
       const { data } = await api<Instance>('/instances', {
@@ -74,9 +94,28 @@ function InstancesPage() {
   const [connectModal, setConnectModal] = useState<number | null>(null);
   const [groupsModal, setGroupsModal] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{
+    type: 'disconnect' | 'logout' | 'clear-cache';
+    id: number;
+    name: string;
+  } | null>(null);
   const [qr, setQr] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<string>('');
   const wsRef = useRef<WebSocket | null>(null);
+
+  const handleConfirmAction = () => {
+    if (!confirmAction) return;
+    const { type, id } = confirmAction;
+    if (type === 'disconnect') disconnectMu.mutate(id);
+    else if (type === 'logout') logoutMu.mutate(id);
+    else clearCacheMu.mutate(id);
+    setConfirmAction(null);
+  };
+
+  const isConfirmPending =
+    (confirmAction?.type === 'disconnect' && disconnectMu.isPending) ||
+    (confirmAction?.type === 'logout' && logoutMu.isPending) ||
+    (confirmAction?.type === 'clear-cache' && clearCacheMu.isPending);
 
   useEffect(() => {
     if (connectModal == null || !token) return;
@@ -168,19 +207,50 @@ function InstancesPage() {
                         </button>
                       )}
                       {inst.status === 'connected' ? (
-                        <button
-                          type="button"
-                          onClick={() => disconnectMu.mutate(inst.id)}
-                          className="rounded bg-red-100 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-200">
-                          Disconnect
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmAction({ type: 'disconnect', id: inst.id, name: inst.name })
+                            }
+                            disabled={disconnectMu.isPending}
+                            className="rounded bg-red-100 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-200 disabled:opacity-50">
+                            Disconnect
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmAction({ type: 'logout', id: inst.id, name: inst.name })
+                            }
+                            disabled={logoutMu.isPending}
+                            className="rounded bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-200 disabled:opacity-50"
+                            title="Disconnect and clear session (next connect will require QR)">
+                            Logout
+                          </button>
+                        </>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConnectModal(inst.id)}
-                          className="rounded bg-[var(--lagoon-deep)] px-2 py-1 text-xs font-medium text-white hover:opacity-90">
-                          Connect
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setConnectModal(inst.id)}
+                            className="rounded bg-[var(--lagoon-deep)] px-2 py-1 text-xs font-medium text-white hover:opacity-90">
+                            Connect
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmAction({
+                                type: 'clear-cache',
+                                id: inst.id,
+                                name: inst.name,
+                              })
+                            }
+                            disabled={clearCacheMu.isPending}
+                            className="rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+                            title="Delete auth/cache folder (fix cache issues; next connect will require QR)">
+                            Clear cache
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>
@@ -196,6 +266,42 @@ function InstancesPage() {
           onClose={() => setShowCreate(false)}
           onSubmit={(body) => createMu.mutate(body)}
           loading={createMu.isPending}
+        />
+      )}
+
+      {confirmAction != null && (
+        <ConfirmActionModal
+          title={
+            confirmAction.type === 'disconnect'
+              ? 'Disconnect instance'
+              : confirmAction.type === 'logout'
+                ? 'Logout instance'
+                : 'Clear cache'
+          }
+          message={
+            confirmAction.type === 'disconnect'
+              ? `Disconnect "${confirmAction.name}"? The instance will go offline until you connect again.`
+              : confirmAction.type === 'logout'
+                ? `Logout "${confirmAction.name}"? The session will be cleared and you will need to scan QR or use pairing code on next connect.`
+                : `Clear cache for "${confirmAction.name}"? Auth data will be removed and you will need to scan QR or use pairing code on next connect.`
+          }
+          confirmLabel={
+            confirmAction.type === 'disconnect'
+              ? 'Disconnect'
+              : confirmAction.type === 'logout'
+                ? 'Logout'
+                : 'Clear cache'
+          }
+          variant={
+            confirmAction.type === 'disconnect'
+              ? 'danger'
+              : confirmAction.type === 'logout'
+                ? 'warning'
+                : 'neutral'
+          }
+          loading={isConfirmPending}
+          onConfirm={handleConfirmAction}
+          onCancel={() => setConfirmAction(null)}
         />
       )}
 
@@ -349,6 +455,52 @@ function GroupsModal({
           className="mt-4 w-full rounded-lg border border-[var(--line)] py-2 text-sm">
           Close
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmActionModal({
+  title,
+  message,
+  confirmLabel,
+  variant,
+  loading,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  variant: 'danger' | 'warning' | 'neutral';
+  loading: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const confirmClass =
+    variant === 'danger'
+      ? 'rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50'
+      : variant === 'warning'
+        ? 'rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50'
+        : 'rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50';
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={onCancel}>
+      <div className="island-shell max-w-sm rounded-2xl p-6" onClick={(e) => e.stopPropagation()}>
+        <h2 className="mb-2 text-lg font-semibold text-[var(--sea-ink)]">{title}</h2>
+        <p className="mb-4 text-sm text-[var(--sea-ink-soft)]">{message}</p>
+        <div className="flex gap-2 justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-[var(--line)] px-4 py-2 text-sm">
+            Cancel
+          </button>
+          <button type="button" onClick={onConfirm} disabled={loading} className={confirmClass}>
+            {loading ? 'Please wait…' : confirmLabel}
+          </button>
+        </div>
       </div>
     </div>
   );

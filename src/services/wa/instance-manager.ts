@@ -1,9 +1,13 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { WASocket } from '@whiskeysockets/baileys';
-import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, {
+  fetchLatestBaileysVersion,
+  useMultiFileAuthState,
+} from '@whiskeysockets/baileys';
 import { eq } from 'drizzle-orm';
+import pino from 'pino';
 
 import { logger } from '@/src/common/utils/logger';
 import { db } from '@/src/db/connection';
@@ -14,14 +18,17 @@ import { instances } from '@/src/db/schema/schema';
  * - Uses ESM; auth state from useMultiFileAuthState supports LID keys (lid-mapping, device-list, tctoken).
  * - We do not send ACKs on message delivery (v7 removes this; WhatsApp may ban otherwise).
  * - sendMessage accepts both PN and LID JIDs; worker passes through job payload as-is.
+ * - Baileys is given a silent logger so its logs (e.g. "connected to WA", "Buffer timeout reached") do not appear in the terminal.
  */
 const log = logger.child({ module: 'instance-manager' });
+/** Silent logger for Baileys to avoid terminal noise (connection, buffer timeout, pairing, etc.). */
+const baileysLogger = pino({ level: 'silent' });
 
 const DATA_DIR = join(process.cwd(), 'data', 'auth');
 const MAX_CONNECT_RETRIES = 3;
 const RETRY_DELAY_MS = 5000;
-/** Status codes that are worth retrying (transient/server failure during pairing). */
-const RETRYABLE_STATUS_CODES = new Set([408, 500, 503]); // connectionLost/timedOut, badSession, unavailableService
+/** Status codes that are worth retrying (transient/server failure or expected restart after pairing). */
+const RETRYABLE_STATUS_CODES = new Set([408, 500, 503, 515]); // connectionLost/timedOut, badSession, unavailableService, stream errored (restart required after pairing)
 
 export type WsInstanceMessage =
   | { type: 'qr'; qr: string }
@@ -65,7 +72,9 @@ function isRetryableDisconnect(
   if (
     msg.includes('Connection Failure') ||
     msg.includes('Connection was lost') ||
-    msg.includes('Connection Terminated')
+    msg.includes('Connection Terminated') ||
+    msg.includes('Stream Errored') ||
+    msg.includes('restart required')
   )
     return true;
   return false;
@@ -101,10 +110,13 @@ export async function connectInstance(instanceId: number, isRetry = false): Prom
 
   const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
+  const { version } = await fetchLatestBaileysVersion();
+
   const sock = makeWASocket({
     auth: state,
+    logger: baileysLogger,
     printQRInTerminal: false,
-    version: [2, 3000, 1033893291],
+    version,
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -206,6 +218,25 @@ export async function disconnectInstance(instanceId: number): Promise<void> {
     .where(eq(instances.id, instanceId));
   notify(instanceId, { type: 'status', status: 'disconnected' });
   log.info({ instanceId }, 'Instance disconnected');
+}
+
+/**
+ * Logs out the instance: disconnects the socket and removes stored auth state.
+ * Next connect will require scanning QR again.
+ */
+export async function logoutInstance(instanceId: number): Promise<void> {
+  await disconnectInstance(instanceId);
+  const authPath = getAuthPath(instanceId);
+  try {
+    await rm(authPath, { recursive: true, force: true });
+    log.info({ instanceId, authPath }, 'Auth state removed');
+  } catch (err) {
+    log.warn({ err, instanceId, authPath }, 'Auth path removal failed (may not exist)');
+  }
+  await db
+    .update(instances)
+    .set({ authStatePath: null, updatedAt: new Date() })
+    .where(eq(instances.id, instanceId));
 }
 
 export function getSocket(instanceId: number): WASocket | undefined {

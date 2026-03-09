@@ -65,15 +65,17 @@ All require **JWT** and role **superadmin** or **admin**.
 
 All require **JWT**. Instance = one WhatsApp connection (one phone/number).
 
-| Method | Path                            | Description                                       |
-| ------ | ------------------------------- | ------------------------------------------------- |
-| GET    | `/api/instances`                | List all instances                                |
-| GET    | `/api/instances/:id`            | Get instance by id                                |
-| POST   | `/api/instances`                | Create instance                                   |
-| POST   | `/api/instances/:id/connect`    | Start connection (may require QR scan)            |
-| POST   | `/api/instances/:id/disconnect` | Disconnect                                        |
-| GET    | `/api/instances/:id/groups`     | List WhatsApp groups (instance must be connected) |
-| DELETE | `/api/instances/:id`            | Delete instance (disconnects first)               |
+| Method | Path                             | Description                                                         |
+| ------ | -------------------------------- | ------------------------------------------------------------------- |
+| GET    | `/api/instances`                 | List all instances                                                  |
+| GET    | `/api/instances/:id`             | Get instance by id                                                  |
+| POST   | `/api/instances`                 | Create instance                                                     |
+| POST   | `/api/instances/:id/connect`     | Start connection (may require QR scan)                              |
+| POST   | `/api/instances/:id/disconnect`  | Disconnect                                                          |
+| POST   | `/api/instances/:id/logout`      | Log out from WhatsApp (unlink device; QR required to connect again) |
+| POST   | `/api/instances/:id/clear-cache` | Clear instance auth/session cache                                   |
+| GET    | `/api/instances/:id/groups`      | List WhatsApp groups (instance must be connected)                   |
+| DELETE | `/api/instances/:id`             | Delete instance (disconnects first)                                 |
 
 ### POST /api/instances
 
@@ -84,6 +86,23 @@ All require **JWT**. Instance = one WhatsApp connection (one phone/number).
 
 Starts WhatsApp connection; if not linked, frontend typically shows QR for user to scan.  
 **Response:** `data`: updated instance (status may become `connected` after QR scan).
+
+### POST /api/instances/:id/disconnect
+
+Stops the WhatsApp connection without removing stored auth.  
+**Response:** `data`: updated instance (status `disconnected`).
+
+### POST /api/instances/:id/logout
+
+Logs out from WhatsApp and unlinks the device. Stored session is cleared; user must scan QR again to connect.  
+**Response:** `data`: updated instance.  
+**Errors:** `500` if logout fails.
+
+### POST /api/instances/:id/clear-cache
+
+Clears the instance auth/session cache. Use when the instance is stuck or you need to force a fresh connection (e.g. re-scan QR).  
+**Response:** `data`: updated instance.  
+**Errors:** `500` if clear cache fails.
 
 ### GET /api/instances/:id/groups
 
@@ -177,7 +196,7 @@ Or multiple recipients:
 
 - **`to`**: Single string or array of strings. Each entry is either:
   - **Private chat:** phone number with country code, no `+` (e.g. `6281234567890`).
-  - **Group:** group JID (e.g. `120363401711708233@g.us`). Get group IDs from `GET /api/instances/:id/groups` (use the `id` field).
+  - **Group:** group JID (e.g. `120363401711708233@g.us`). With API key use `GET /api/v1/get/groups`; with JWT use `GET /api/instances/:id/groups` (use the `id` field).
 - **`text`**: Non-empty string.
 
 **Sending to groups:** Use the same request format. Set `to` to the group JID (or an array including group JIDs). No extra parameters needed.
@@ -202,7 +221,7 @@ Or multiple recipients:
 }
 ```
 
-- **`to`**: Same as text — phone number(s) and/or group JID(s) (from `GET /api/instances/:id/groups`).
+- **`to`**: Same as text — phone number(s) and/or group JID(s) (from `GET /api/v1/get/groups` or `GET /api/instances/:id/groups`).
 - **`fileUrl`**: Public URL of the file; WhatsApp fetches and sends it.
 - **`caption`**, **`fileName`**: Optional.
 - **`fileType`**: Optional. One of `image`, `video`, `audio`, `document`. If omitted, the server infers the type from **`fileName`** or from the URL path (e.g. `.jpg` → image, `.mp4` → video, `.pdf` → document). Use this to force the message type when the URL has no extension.
@@ -217,6 +236,30 @@ Or multiple recipients:
 | document      | everything else (pdf, doc, docx, etc.) |
 
 **Response:** Same as text: `{ "jobId": string, "status": "queued" }`.
+
+---
+
+## Get (for other services)
+
+Base path: **`/api/v1/get`**. Auth: **`x-api-key: <apiKey>`** (from App). No JWT.
+
+Same as Send: the API key identifies the app and its linked instance. Use these endpoints to read data (e.g. groups) for that instance.
+
+| Method | Path                 | Description                                 |
+| ------ | -------------------- | ------------------------------------------- |
+| GET    | `/api/v1/get/groups` | List WhatsApp groups for the app's instance |
+
+### GET /api/v1/get/groups
+
+**Headers:** `x-api-key: <apiKey>`
+
+Returns all groups the instance is participating in. The instance must be **connected**.
+
+**Response:** `data`: `[{ id: string (group JID), name: string }, ...]`
+
+Use the `id` values as `to` when sending messages to groups via `/api/v1/send/text` or `/api/v1/send/file`.
+
+**Errors:** `400` if instance not connected or no longer connected (e.g. after server restart); `401` invalid/missing API key; `403` app inactive; `404` instance not found; `500` on fetch failure.
 
 ---
 
