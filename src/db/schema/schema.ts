@@ -84,6 +84,10 @@ export const apps = pgTable(
     apiKeyHash: text('api_key_hash').notNull(),
     isActive: integer('is_active').notNull().default(1),
     createdBy: integer('created_by'),
+    commandAllowedGroups: jsonb('command_allowed_groups').$type<Array<string>>(), // list of groups that the app is allowed to send commands to
+    commandAllowedUsers: jsonb('command_allowed_users').$type<Array<string>>(), // list of users that the app is allowed to send commands to
+    commandWebHook: varchar('command_web_hook', { length: 255 }), // webhook url for the app to send the commands
+    commandList: jsonb('command_list').$type<Array<string>>(), // list of commands that the app is allowed to send
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },

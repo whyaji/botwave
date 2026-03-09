@@ -15,6 +15,10 @@ const createAppSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().optional(),
   instanceId: z.number().int().positive(),
+  commandAllowedGroups: z.array(z.string()).optional(),
+  commandAllowedUsers: z.array(z.string()).optional(),
+  commandWebHook: z.string().url().optional().or(z.literal('')),
+  commandList: z.array(z.string()).optional(),
 });
 
 const updateAppSchema = z.object({
@@ -22,6 +26,10 @@ const updateAppSchema = z.object({
   description: z.string().optional(),
   instanceId: z.number().int().positive().optional(),
   isActive: z.union([z.literal(0), z.literal(1)]).optional(),
+  commandAllowedGroups: z.array(z.string()).optional(),
+  commandAllowedUsers: z.array(z.string()).optional(),
+  commandWebHook: z.string().url().optional().or(z.literal('')).nullable(),
+  commandList: z.array(z.string()).optional(),
 });
 
 export const appsRoutes = new Hono();
@@ -37,6 +45,10 @@ appsRoutes.get('/', async (c) => {
       description: apps.description,
       instanceId: apps.instanceId,
       isActive: apps.isActive,
+      commandAllowedGroups: apps.commandAllowedGroups,
+      commandAllowedUsers: apps.commandAllowedUsers,
+      commandWebHook: apps.commandWebHook,
+      commandList: apps.commandList,
       createdBy: apps.createdBy,
       createdAt: apps.createdAt,
       updatedAt: apps.updatedAt,
@@ -59,6 +71,10 @@ appsRoutes.get('/:id', async (c) => {
       description: apps.description,
       instanceId: apps.instanceId,
       isActive: apps.isActive,
+      commandAllowedGroups: apps.commandAllowedGroups,
+      commandAllowedUsers: apps.commandAllowedUsers,
+      commandWebHook: apps.commandWebHook,
+      commandList: apps.commandList,
       createdBy: apps.createdBy,
       createdAt: apps.createdAt,
       updatedAt: apps.updatedAt,
@@ -92,6 +108,13 @@ appsRoutes.post('/', async (c) => {
       apiKeyHash,
       isActive: 1,
       createdBy: userId,
+      commandAllowedGroups: parsed.data.commandAllowedGroups ?? null,
+      commandAllowedUsers: parsed.data.commandAllowedUsers ?? null,
+      commandWebHook:
+        parsed.data.commandWebHook && parsed.data.commandWebHook !== ''
+          ? parsed.data.commandWebHook
+          : null,
+      commandList: parsed.data.commandList ?? null,
     })
     .returning({
       id: apps.id,
@@ -100,6 +123,10 @@ appsRoutes.post('/', async (c) => {
       description: apps.description,
       instanceId: apps.instanceId,
       isActive: apps.isActive,
+      commandAllowedGroups: apps.commandAllowedGroups,
+      commandAllowedUsers: apps.commandAllowedUsers,
+      commandWebHook: apps.commandWebHook,
+      commandList: apps.commandList,
       createdAt: apps.createdAt,
       updatedAt: apps.updatedAt,
     });
@@ -125,12 +152,26 @@ appsRoutes.put('/:id', async (c) => {
     description: string | null;
     instanceId: number;
     isActive: number;
+    commandAllowedGroups: Array<string> | null;
+    commandAllowedUsers: Array<string> | null;
+    commandWebHook: string | null;
+    commandList: Array<string> | null;
     updatedAt: Date;
   }> = {};
   if (parsed.data.name !== undefined) updates.name = parsed.data.name;
   if (parsed.data.description !== undefined) updates.description = parsed.data.description ?? null;
   if (parsed.data.instanceId !== undefined) updates.instanceId = parsed.data.instanceId;
   if (parsed.data.isActive !== undefined) updates.isActive = parsed.data.isActive;
+  if (parsed.data.commandAllowedGroups !== undefined)
+    updates.commandAllowedGroups = parsed.data.commandAllowedGroups ?? null;
+  if (parsed.data.commandAllowedUsers !== undefined)
+    updates.commandAllowedUsers = parsed.data.commandAllowedUsers ?? null;
+  if (parsed.data.commandWebHook !== undefined)
+    updates.commandWebHook =
+      parsed.data.commandWebHook && parsed.data.commandWebHook !== ''
+        ? parsed.data.commandWebHook
+        : null;
+  if (parsed.data.commandList !== undefined) updates.commandList = parsed.data.commandList ?? null;
   updates.updatedAt = new Date();
 
   const [updated] = await db.update(apps).set(updates).where(eq(apps.id, id)).returning({
@@ -140,6 +181,10 @@ appsRoutes.put('/:id', async (c) => {
     description: apps.description,
     instanceId: apps.instanceId,
     isActive: apps.isActive,
+    commandAllowedGroups: apps.commandAllowedGroups,
+    commandAllowedUsers: apps.commandAllowedUsers,
+    commandWebHook: apps.commandWebHook,
+    commandList: apps.commandList,
     createdAt: apps.createdAt,
     updatedAt: apps.updatedAt,
   });

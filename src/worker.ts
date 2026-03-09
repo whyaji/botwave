@@ -7,13 +7,17 @@ import { eq, lt } from 'drizzle-orm';
 import { logger } from '@/src/common/utils/logger';
 import { bullConnection } from '@/src/config/bull-redis';
 import { db } from '@/src/db/connection';
-import { jobs } from '@/src/db/schema/schema';
+import { instances, jobs } from '@/src/db/schema/schema';
 import { JOBS_CLEANUP_QUEUE_NAME } from '@/src/services/queue/jobs-cleanup-queue';
 import type { WaSendFileType, WaSendJobPayload } from '@/src/services/queue/wa-send-queue';
 import { WA_SEND_QUEUE_NAME } from '@/src/services/queue/wa-send-queue';
 import { getSocket } from '@/src/services/wa/instance-manager';
 
 const log = logger.child({ module: 'worker' });
+
+/** Max time to wait for socket / connection open (Baileys AwaitingInitialSync can take ~20s). */
+const WAIT_FOR_CONNECTION_MS = 28_000;
+const WAIT_POLL_INTERVAL_MS = 2000;
 
 const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', '3gp', 'm4v']);
@@ -127,18 +131,42 @@ export function startWorker() {
         })
         .where(eq(jobs.id, dbJobId));
 
-      const sock = getSocket(instanceId);
+      let sock = getSocket(instanceId);
       if (!sock) {
-        await db
-          .update(jobs)
-          .set({
-            status: 'Failed',
-            lastError: 'Instance not connected',
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(jobs.id, dbJobId));
-        throw new Error('Instance not connected');
+        const [instance] = await db
+          .select({ status: instances.status })
+          .from(instances)
+          .where(eq(instances.id, instanceId))
+          .limit(1);
+        const canRetry =
+          instance && (instance.status === 'connected' || instance.status === 'connecting');
+        if (canRetry) {
+          const deadline = Date.now() + WAIT_FOR_CONNECTION_MS;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, WAIT_POLL_INTERVAL_MS));
+            sock = getSocket(instanceId);
+            if (sock) break;
+          }
+        }
+        if (!sock) {
+          if (canRetry) {
+            log.warn(
+              { instanceId, jobId: job.id },
+              'Instance not ready yet (socket missing), throwing for retry'
+            );
+            throw new Error('Instance not connected');
+          }
+          await db
+            .update(jobs)
+            .set({
+              status: 'Failed',
+              lastError: 'Instance not connected',
+              completedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(jobs.id, dbJobId));
+          throw new Error('Instance not connected');
+        }
       }
 
       const errors: string[] = [];

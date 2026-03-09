@@ -7,11 +7,12 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 import { eq } from 'drizzle-orm';
-import pino from 'pino';
 
 import { logger } from '@/src/common/utils/logger';
 import { db } from '@/src/db/connection';
 import { instances } from '@/src/db/schema/schema';
+
+import { processCommandMessage } from './command-webhook.service';
 
 /**
  * Instance manager for Baileys v7 (https://baileys.wiki/docs/migration/to-v7.0.0).
@@ -22,7 +23,6 @@ import { instances } from '@/src/db/schema/schema';
  */
 const log = logger.child({ module: 'instance-manager' });
 /** Silent logger for Baileys to avoid terminal noise (connection, buffer timeout, pairing, etc.). */
-const baileysLogger = pino({ level: 'silent' });
 
 const DATA_DIR = join(process.cwd(), 'data', 'auth');
 const MAX_CONNECT_RETRIES = 3;
@@ -114,12 +114,29 @@ export async function connectInstance(instanceId: number, isRetry = false): Prom
 
   const sock = makeWASocket({
     auth: state,
-    logger: baileysLogger,
     printQRInTerminal: false,
     version,
   });
 
   sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('messages.upsert', async ({ type, messages }) => {
+    if (type !== 'notify') return;
+    for (const msg of messages) {
+      if (msg.key.fromMe) continue;
+      const remoteJid = msg.key.remoteJid;
+      if (!remoteJid) continue;
+      const content = msg.message;
+      if (!content) continue;
+      const text =
+        (content as { conversation?: string }).conversation ??
+        (content as { extendedTextMessage?: { text?: string } }).extendedTextMessage?.text;
+      if (typeof text !== 'string' || !text.startsWith('!')) continue;
+      processCommandMessage(instanceId, remoteJid, text).catch((err) => {
+        log.error({ err, instanceId, remoteJid }, 'Command webhook processing failed');
+      });
+    }
+  });
 
   sock.ev.on('connection.update', async (update) => {
     if (update.qr) {
@@ -245,6 +262,11 @@ export function getSocket(instanceId: number): WASocket | undefined {
 
 export function isConnected(instanceId: number): boolean {
   return sockets.has(instanceId);
+}
+
+/** True when Baileys has emitted connection === 'open' (past AwaitingInitialSync). Use this before sending. */
+export function isConnectionOpen(instanceId: number): boolean {
+  return openedInstances.has(instanceId);
 }
 
 /**
