@@ -3,6 +3,8 @@ import 'dotenv/config';
 import type { AnyMessageContent } from '@whiskeysockets/baileys';
 import { Worker } from 'bullmq';
 import { eq, lt } from 'drizzle-orm';
+import fs from 'fs';
+import path from 'path';
 
 import { logger } from '@/src/common/utils/logger';
 import { bullConnection } from '@/src/config/bull-redis';
@@ -35,18 +37,23 @@ const EXT_TO_MIMETYPE: Record<string, string> = {
   zip: 'application/zip',
 };
 
-function getExtension(fileName?: string, fileUrl?: string): string {
+function getExtension(fileName?: string, fileUrlOrPath?: string): string {
   if (fileName?.includes('.')) {
     const ext = fileName.split('.').pop()?.toLowerCase();
     if (ext) return ext;
   }
-  if (fileUrl) {
-    try {
-      const pathname = new URL(fileUrl).pathname;
-      const match = pathname.match(/\.([a-z0-9]+)(?:\?|$)/i);
-      if (match) return match[1].toLowerCase();
-    } catch {
-      // ignore
+  if (fileUrlOrPath) {
+    if (fileUrlOrPath.startsWith('http://') || fileUrlOrPath.startsWith('https://')) {
+      try {
+        const pathname = new URL(fileUrlOrPath).pathname;
+        const match = pathname.match(/\.([a-z0-9]+)(?:\?|$)/i);
+        if (match) return match[1].toLowerCase();
+      } catch {
+        // ignore
+      }
+    } else {
+      const ext = fileUrlOrPath.split('.').pop()?.toLowerCase();
+      if (ext) return ext;
     }
   }
   return '';
@@ -94,11 +101,13 @@ function buildFileContent(
     case 'document':
     default: {
       const doc: {
-        document: { url: string; fileName?: string };
+        document: { url: string };
+        fileName?: string;
         caption?: string;
         mimetype: string;
       } = {
-        document: { ...base, fileName: fileName ?? undefined },
+        document: base,
+        fileName: fileName ?? undefined,
         mimetype: getMimetype(fileName, fileUrl),
       };
       if (caption) doc.caption = caption;
@@ -117,6 +126,7 @@ export function startWorker() {
         to,
         text,
         fileUrl,
+        filePath,
         caption,
         fileName,
         fileType: explicitFileType,
@@ -178,9 +188,11 @@ export function startWorker() {
           if (text) {
             await sock.sendMessage(jid, { text });
             results.push({ jid: rawTo, success: true });
-          } else if (fileUrl) {
-            const fileType = resolveFileType(explicitFileType, fileName, fileUrl);
-            const content = buildFileContent(fileUrl, fileType, caption, fileName);
+          } else if (fileUrl || filePath) {
+            const source = fileUrl || filePath;
+            if (!source) throw new Error('No media source provided');
+            const fileType = resolveFileType(explicitFileType, fileName, source);
+            const content = buildFileContent(source, fileType, caption, fileName);
             await sock.sendMessage(jid, content);
             results.push({ jid: rawTo, success: true });
           }
@@ -202,6 +214,15 @@ export function startWorker() {
           updatedAt: new Date(),
         })
         .where(eq(jobs.id, dbJobId));
+
+      if (allOk && filePath) {
+        try {
+          await fs.promises.unlink(filePath);
+          log.info({ filePath, jobId: job.id }, 'Temporary file deleted after successful job');
+        } catch (err) {
+          log.error({ filePath, err, jobId: job.id }, 'Failed to delete temporary file on success');
+        }
+      }
 
       if (!allOk) {
         throw new Error(errors.join('; '));
@@ -230,14 +251,99 @@ export function startWorker() {
     JOBS_CLEANUP_QUEUE_NAME,
     async () => {
       const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - 30);
+      cutoff.setDate(cutoff.getDate() - 90); // 3 months (90 days)
+
+      // 1. Delete files of failed/old jobs using DB records
+      const oldJobs = await db
+        .select({ id: jobs.id, payload: jobs.payload })
+        .from(jobs)
+        .where(lt(jobs.createdAt, cutoff));
+
+      let deletedJobFilesCount = 0;
+      for (const jobRow of oldJobs) {
+        const payload = jobRow.payload as WaSendJobPayload | null;
+        if (payload && payload.filePath) {
+          try {
+            if (fs.existsSync(payload.filePath)) {
+              await fs.promises.unlink(payload.filePath);
+              deletedJobFilesCount++;
+            }
+          } catch (err) {
+            log.error(
+              { filePath: payload.filePath, err },
+              'Failed to delete old job file during cleanup'
+            );
+          }
+        }
+      }
+
+      // 2. Delete database records older than 3 months
       const deleted = await db
         .delete(jobs)
         .where(lt(jobs.createdAt, cutoff))
         .returning({ id: jobs.id });
       const count = deleted.length;
-      log.info({ count, cutoff: cutoff.toISOString() }, 'Jobs cleanup: deleted old jobs');
-      return { deleted: count };
+
+      // 3. Scan storage/app/temp directory for files older than 3 months
+      const tempDir = path.join(process.cwd(), 'storage/app/temp');
+      let cleanedTempFiles = 0;
+      if (fs.existsSync(tempDir)) {
+        try {
+          const files = await fs.promises.readdir(tempDir);
+          const now = Date.now();
+          const threeMonthsMs = 90 * 24 * 60 * 60 * 1000;
+          for (const file of files) {
+            if (file === '.gitignore') continue;
+            const filePath = path.join(tempDir, file);
+            const stats = await fs.promises.stat(filePath);
+            if (now - stats.mtimeMs > threeMonthsMs) {
+              await fs.promises.unlink(filePath);
+              cleanedTempFiles++;
+            }
+          }
+        } catch (err) {
+          log.error({ err }, 'Failed to clean storage/app/temp directory');
+        }
+      }
+
+      // 4. Scan storage/logs directory for log files older than 3 months
+      const logsDir = path.join(process.cwd(), 'storage/logs');
+      let cleanedLogFiles = 0;
+      if (fs.existsSync(logsDir)) {
+        try {
+          const files = await fs.promises.readdir(logsDir);
+          const now = Date.now();
+          const threeMonthsMs = 90 * 24 * 60 * 60 * 1000;
+          for (const file of files) {
+            if (file === '.gitignore') continue;
+            const filePath = path.join(logsDir, file);
+            const stats = await fs.promises.stat(filePath);
+            if (now - stats.mtimeMs > threeMonthsMs) {
+              await fs.promises.unlink(filePath);
+              cleanedLogFiles++;
+            }
+          }
+        } catch (err) {
+          log.error({ err }, 'Failed to clean storage/logs directory');
+        }
+      }
+
+      log.info(
+        {
+          deletedJobs: count,
+          deletedJobFilesFromDb: deletedJobFilesCount,
+          cleanedTempFiles,
+          cleanedLogFiles,
+          cutoff: cutoff.toISOString(),
+        },
+        'Jobs cleanup completed'
+      );
+      return {
+        deletedJobs: count,
+        deletedJobFilesFromDb: deletedJobFilesCount,
+        cleanedTempFiles,
+        cleanedLogFiles,
+      };
     },
     { connection: bullConnection, concurrency: 1 }
   );

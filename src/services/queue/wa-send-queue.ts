@@ -11,6 +11,7 @@ export type WaSendJobPayload = {
   to: string[];
   text?: string;
   fileUrl?: string;
+  filePath?: string;
   caption?: string;
   fileName?: string;
   fileType?: WaSendFileType;

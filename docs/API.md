@@ -167,10 +167,11 @@ Base path: **`/api/v1/send`**. Auth: **`x-api-key: <apiKey>`** (from App). No JW
 
 The API key determines which instance and app are used; `instanceId` and `appId` are resolved server-side.
 
-| Method | Path                | Description          |
-| ------ | ------------------- | -------------------- |
-| POST   | `/api/v1/send/text` | Send text message(s) |
-| POST   | `/api/v1/send/file` | Send file from URL   |
+| Method | Path                    | Description                      |
+| ------ | ----------------------- | -------------------------------- |
+| POST   | `/api/v1/send/text`     | Send text message(s)             |
+| POST   | `/api/v1/send/file`     | Send file from URL               |
+| POST   | `/api/v1/send/raw-file` | Send raw file upload (Max 100MB) |
 
 ### POST /api/v1/send/text
 
@@ -234,6 +235,18 @@ Or multiple recipients:
 | video         | mp4, webm, mov, avi, mkv, 3gp, m4v     |
 | audio         | mp3, ogg, m4a, aac, wav, oga, opus     |
 | document      | everything else (pdf, doc, docx, etc.) |
+
+**Response:** Same as text: `{ "jobId": string, "status": "queued" }`.
+
+### POST /api/v1/send/raw-file
+
+**Headers:** `x-api-key: <apiKey>`, `Content-Type: multipart/form-data`
+
+**Form-Data Fields:**
+
+- **`to`**: Phone number(s) and/or group JID(s) (string, array of strings, or comma-separated list).
+- **`caption`**: Optional caption (string).
+- **`file`**: The raw file to upload. Max file size: **100 MB**.
 
 **Response:** Same as text: `{ "jobId": string, "status": "queued" }`.
 
