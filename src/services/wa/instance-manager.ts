@@ -26,7 +26,10 @@ const log = logger.child({ module: 'instance-manager' });
 
 const DATA_DIR = join(process.cwd(), 'data', 'auth');
 const MAX_CONNECT_RETRIES = 3;
+/** Max retries when reconnecting after an already-open session (frequent disconnects). */
+const MAX_RECONNECT_RETRIES = 15;
 const RETRY_DELAY_MS = 5000;
+const MAX_RECONNECT_DELAY_MS = 120_000; // cap exponential backoff at 2 minutes
 /** Status codes that are worth retrying (transient/server failure or expected restart after pairing). */
 const RETRYABLE_STATUS_CODES = new Set([408, 500, 503, 515]); // connectionLost/timedOut, badSession, unavailableService, stream errored (restart required after pairing)
 
@@ -74,7 +77,12 @@ function isRetryableDisconnect(
     msg.includes('Connection was lost') ||
     msg.includes('Connection Terminated') ||
     msg.includes('Stream Errored') ||
-    msg.includes('restart required')
+    msg.includes('restart required') ||
+    msg.includes('Buffer timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ETIMEDOUT')
   )
     return true;
   return false;
@@ -175,15 +183,19 @@ export async function connectInstance(instanceId: number, isRetry = false): Prom
         sockets.delete(instanceId);
         openedInstances.delete(instanceId);
 
-        if (
-          !wasOpened &&
-          isRetryableDisconnect(update.lastDisconnect) &&
-          currentRetries < MAX_CONNECT_RETRIES
-        ) {
-          retryCount.set(instanceId, currentRetries + 1);
+        const retryable = isRetryableDisconnect(update.lastDisconnect);
+        const maxRetries = wasOpened ? MAX_RECONNECT_RETRIES : MAX_CONNECT_RETRIES;
+        const underLimit = currentRetries < maxRetries;
+
+        if (retryable && underLimit) {
+          const nextAttempt = currentRetries + 1;
+          retryCount.set(instanceId, nextAttempt);
+          const delayMs = wasOpened
+            ? Math.min(RETRY_DELAY_MS * Math.pow(2, currentRetries), MAX_RECONNECT_DELAY_MS)
+            : RETRY_DELAY_MS;
           log.info(
-            { instanceId, attempt: currentRetries + 1, reason },
-            'Connection failed, retrying...'
+            { instanceId, attempt: nextAttempt, reason, wasOpened, delayMs },
+            wasOpened ? 'Disconnected, reconnecting...' : 'Connection failed, retrying...'
           );
           await db
             .update(instances)
@@ -193,7 +205,7 @@ export async function connectInstance(instanceId: number, isRetry = false): Prom
           const timeoutId = setTimeout(() => {
             retryTimeouts.delete(instanceId);
             connectInstance(instanceId, true);
-          }, RETRY_DELAY_MS);
+          }, delayMs);
           retryTimeouts.set(instanceId, timeoutId);
           return;
         }
