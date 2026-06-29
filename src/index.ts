@@ -6,6 +6,7 @@ import { errorMiddleware } from './common/middleware/error.middleware';
 import { appsRoutes } from './routes/apps.routes';
 import { authRoutes } from './routes/auth.routes';
 import { getRoutes } from './routes/get.routes';
+import { getJobStatusRoutes } from './routes/get-job-status.route';
 import { instancesRoutes } from './routes/instances.routes';
 import { jobsRoutes } from './routes/jobs.routes';
 import { sendRoutes } from './routes/send.routes';
@@ -23,6 +24,7 @@ app.route('/api/apps', appsRoutes);
 app.route('/api/jobs', jobsRoutes);
 app.route('/api/v1/send', sendRoutes);
 app.route('/api/v1/get', getRoutes);
+app.route('/api/v1/jobs-status', getJobStatusRoutes);
 
 // Serve static files from the built frontend (catch-all for SPA routing)
 app.get('*', serveStatic({ root: './frontend/dist' }));
