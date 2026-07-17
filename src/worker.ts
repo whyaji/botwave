@@ -5,15 +5,17 @@ import { Worker } from 'bullmq';
 import { eq, lt } from 'drizzle-orm';
 import fs from 'fs';
 import path from 'path';
+import { MessageMedia } from 'whatsapp-web.js';
 
 import { logger } from '@/src/common/utils/logger';
 import { bullConnection } from '@/src/config/bull-redis';
 import { db } from '@/src/db/connection';
-import { instances, jobs } from '@/src/db/schema/schema';
+import { instances, jobs, settings } from '@/src/db/schema/schema';
 import { JOBS_CLEANUP_QUEUE_NAME } from '@/src/services/queue/jobs-cleanup-queue';
 import type { WaSendFileType, WaSendJobPayload } from '@/src/services/queue/wa-send-queue';
 import { WA_SEND_QUEUE_NAME } from '@/src/services/queue/wa-send-queue';
 import { getSocket } from '@/src/services/wa/instance-manager';
+import { getWebjsClient } from '@/src/services/wa/webjs-manager';
 
 const log = logger.child({ module: 'worker' });
 
@@ -116,6 +118,69 @@ function buildFileContent(
   }
 }
 
+/** Normalize "to" to a full whatsapp-web.js JID. Phone numbers become number@c.us; group IDs stay as-is. */
+function normalizeWebjsJid(to: string): string {
+  if (to.includes('@')) {
+    return to.replace('@s.whatsapp.net', '@c.us');
+  }
+  const digits = to.replace(/\D/g, '');
+  return `${digits}@c.us`;
+}
+
+async function buildWebjsMessageMedia(source: string, fileName?: string): Promise<MessageMedia> {
+  const isUrl = source.startsWith('http://') || source.startsWith('https://');
+  if (isUrl) {
+    const res = await fetch(source);
+    if (!res.ok) throw new Error(`Failed to fetch media from URL: ${res.statusText}`);
+    const buffer = await res.arrayBuffer();
+    const base64Data = Buffer.from(buffer).toString('base64');
+    const mimetype = res.headers.get('content-type') || getMimetype(fileName, source);
+    return new MessageMedia(mimetype, base64Data, fileName);
+  } else {
+    const fileBuffer = await fs.promises.readFile(source);
+    const base64Data = fileBuffer.toString('base64');
+    const mimetype = getMimetype(fileName, source);
+    return new MessageMedia(mimetype, base64Data, fileName);
+  }
+}
+
+async function getDelaySetting(): Promise<number> {
+  const [row] = await db
+    .select()
+    .from(settings)
+    .where(eq(settings.key, 'DELAY_SENDING_SECONDS'))
+    .limit(1);
+  if (!row) return 0;
+  const parsed = parseInt(row.value, 10);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+async function applyHumanDelay(textOrCaption: string = '', maxDelay: number) {
+  if (maxDelay <= 0) return;
+  const textLength = textOrCaption.length;
+  // Assume ~4 characters per second typing speed
+  const typingSpeed = 4;
+  const calculatedDelay = textLength / typingSpeed;
+
+  // Add random jitter of -1.5 to +1.5 seconds
+  const jitter = (Math.random() - 0.5) * 3;
+  let delay = calculatedDelay + jitter;
+
+  // Clamp between 1.5 seconds and maxDelay
+  if (delay > maxDelay) {
+    delay = maxDelay;
+  }
+  if (delay < 1.5) {
+    delay = Math.min(1.5, maxDelay);
+  }
+
+  log.info(
+    { textLength, calculatedDelay, jitter, finalDelaySeconds: delay },
+    'Applying human-like typing delay'
+  );
+  await new Promise((resolve) => setTimeout(resolve, Math.round(delay * 1000)));
+}
+
 export function startWorker() {
   const worker = new Worker<WaSendJobPayload>(
     WA_SEND_QUEUE_NAME,
@@ -141,20 +206,36 @@ export function startWorker() {
         })
         .where(eq(jobs.id, dbJobId));
 
-      let sock = getSocket(instanceId);
+      const [instance] = await db
+        .select({ status: instances.status, mode: instances.mode })
+        .from(instances)
+        .where(eq(instances.id, instanceId))
+        .limit(1);
+
+      if (!instance) {
+        await db
+          .update(jobs)
+          .set({
+            status: 'Failed',
+            lastError: 'Instance not found',
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(jobs.id, dbJobId));
+        throw new Error('Instance not found');
+      }
+
+      const isWebjs = instance.mode === 'webjs';
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let sock: any = isWebjs ? getWebjsClient(instanceId) : getSocket(instanceId);
       if (!sock) {
-        const [instance] = await db
-          .select({ status: instances.status })
-          .from(instances)
-          .where(eq(instances.id, instanceId))
-          .limit(1);
-        const canRetry =
-          instance && (instance.status === 'connected' || instance.status === 'connecting');
+        const canRetry = instance.status === 'connected' || instance.status === 'connecting';
         if (canRetry) {
           const deadline = Date.now() + WAIT_FOR_CONNECTION_MS;
           while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, WAIT_POLL_INTERVAL_MS));
-            sock = getSocket(instanceId);
+            sock = isWebjs ? getWebjsClient(instanceId) : getSocket(instanceId);
             if (sock) break;
           }
         }
@@ -162,7 +243,7 @@ export function startWorker() {
           if (canRetry) {
             log.warn(
               { instanceId, jobId: job.id },
-              'Instance not ready yet (socket missing), throwing for retry'
+              'Instance not ready yet (client/socket missing), throwing for retry'
             );
             throw new Error('Instance not connected');
           }
@@ -182,19 +263,37 @@ export function startWorker() {
       const errors: string[] = [];
       const results: { jid: string; success: boolean; error?: string }[] = [];
 
+      const maxDelay = await getDelaySetting();
+
       for (const rawTo of to) {
-        const jid = normalizeJid(rawTo);
         try {
-          if (text) {
-            await sock.sendMessage(jid, { text });
-            results.push({ jid: rawTo, success: true });
-          } else if (fileUrl || filePath) {
-            const source = fileUrl || filePath;
-            if (!source) throw new Error('No media source provided');
-            const fileType = resolveFileType(explicitFileType, fileName, source);
-            const content = buildFileContent(source, fileType, caption, fileName);
-            await sock.sendMessage(jid, content);
-            results.push({ jid: rawTo, success: true });
+          const payloadText = text || caption || '';
+          await applyHumanDelay(payloadText, maxDelay);
+          if (isWebjs) {
+            const jid = normalizeWebjsJid(rawTo);
+            if (text) {
+              await sock.sendMessage(jid, text);
+              results.push({ jid: rawTo, success: true });
+            } else if (fileUrl || filePath) {
+              const source = fileUrl || filePath;
+              if (!source) throw new Error('No media source provided');
+              const media = await buildWebjsMessageMedia(source, fileName);
+              await sock.sendMessage(jid, media, caption ? { caption } : undefined);
+              results.push({ jid: rawTo, success: true });
+            }
+          } else {
+            const jid = normalizeJid(rawTo);
+            if (text) {
+              await sock.sendMessage(jid, { text });
+              results.push({ jid: rawTo, success: true });
+            } else if (fileUrl || filePath) {
+              const source = fileUrl || filePath;
+              if (!source) throw new Error('No media source provided');
+              const fileType = resolveFileType(explicitFileType, fileName, source);
+              const content = buildFileContent(source, fileType, caption, fileName);
+              await sock.sendMessage(jid, content);
+              results.push({ jid: rawTo, success: true });
+            }
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

@@ -48,6 +48,8 @@ export const users = pgTable(
   (table) => [index('idx_users_email').on(table.email)]
 );
 
+export const instanceModeEnum = pgEnum('instance_mode', ['baileys', 'webjs']);
+
 /**
  * Instances table – WA device/session per Baileys connection
  */
@@ -60,6 +62,7 @@ export const instances = pgTable(
     status: instanceStatusEnum('status').notNull().default('disconnected'),
     authStatePath: varchar('auth_state_path', { length: 512 }),
     lastConnectedAt: timestamp('last_connected_at'),
+    mode: instanceModeEnum('mode').notNull().default('baileys'),
     createdBy: integer('created_by'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
@@ -145,4 +148,19 @@ export const jobs = pgTable(
     index('idx_jobs_type').on(table.type),
     index('idx_jobs_createdBy').on(table.createdBy),
   ]
+);
+
+/**
+ * Settings table – stores key-value configuration settings
+ */
+export const settings = pgTable(
+  'settings',
+  {
+    id: serial('id').primaryKey(),
+    key: varchar('key', { length: 255 }).notNull().unique(), // example DELAY_SENDING_SECONDS, INACTIVE_SCHEDULED
+    value: text('value').notNull(), // example for delay 15, INACTIVE_SCHEDULED is multiple time, example 00:00-04:00,17:40-18:00
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => [index('idx_settings_key').on(table.key)]
 );

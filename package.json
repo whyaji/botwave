@@ -10,7 +10,7 @@
     "lint": "eslint . --fix"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.70.1",
     "date-fns": "^4.1.0",
@@ -19,6 +19,8 @@
     "hono": "^4.12.2",
     "pg": "^8.17.2",
     "pino": "^10.2.1",
+    "puppeteer": "^25.3.0",
+    "whatsapp-web.js": "^1.34.7",
     "zod": "^4.3.5"
   },
   "devDependencies": {

@@ -1,5 +1,7 @@
+import type { WASocket } from '@whiskeysockets/baileys';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { Chat, Client } from 'whatsapp-web.js';
 import { z } from 'zod';
 
 import { db } from '@/src/db/connection';
@@ -10,6 +12,7 @@ import {
   getSocket,
   logoutInstance,
 } from '@/src/services/wa/instance-manager';
+import { getWebjsClient } from '@/src/services/wa/webjs-manager';
 
 import { authMiddleware } from '../common/middleware/auth.middleware';
 import { errorResponse, successResponse } from '../common/utils/response';
@@ -17,6 +20,7 @@ import { errorResponse, successResponse } from '../common/utils/response';
 const createInstanceSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().optional(),
+  mode: z.enum(['baileys', 'webjs']).optional().default('baileys'),
 });
 
 export const instancesRoutes = new Hono();
@@ -51,6 +55,7 @@ instancesRoutes.post('/', async (c) => {
     .values({
       name: parsed.data.name,
       description: parsed.data.description ?? null,
+      mode: parsed.data.mode,
       status: 'disconnected',
       createdBy: userId,
     })
@@ -93,7 +98,8 @@ instancesRoutes.get('/:id/groups', async (c) => {
   if (row.status !== 'connected') {
     return errorResponse(c, 'VALIDATION_ERROR', 'Instance must be connected', 400);
   }
-  const sock = getSocket(id);
+  const isWebjs = row.mode === 'webjs';
+  const sock = isWebjs ? getWebjsClient(id) : getSocket(id);
   if (!sock) {
     await db
       .update(instances)
@@ -107,13 +113,28 @@ instancesRoutes.get('/:id/groups', async (c) => {
     );
   }
   try {
-    const groupsMap = await sock.groupFetchAllParticipating();
-    const groups = Object.entries(groupsMap).map(([jid, meta]) => ({
-      id: jid,
-      name: meta?.subject ?? 'Unknown',
-    }));
-    return successResponse(c, groups);
+    if (isWebjs) {
+      const client = sock as Client;
+      const chats = await client.getChats();
+      const groups = chats
+        .filter((chat: Chat) => chat.isGroup)
+        .map((chat: Chat) => ({
+          id: chat.id._serialized,
+          name: chat.name || 'Unknown',
+        }));
+      return successResponse(c, groups);
+    } else {
+      const socket = sock as WASocket;
+      const groupsMap = await socket.groupFetchAllParticipating();
+      const groups = Object.entries(groupsMap).map(([jid, meta]) => ({
+        id: jid,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        name: (meta as any)?.subject ?? 'Unknown',
+      }));
+      return successResponse(c, groups);
+    }
   } catch (err) {
+    console.error('Failed to fetch groups for instances:', err);
     return errorResponse(
       c,
       'INTERNAL_ERROR',

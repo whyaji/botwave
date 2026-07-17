@@ -6,32 +6,29 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
-import { eq } from 'drizzle-orm';
+import { eq, isNotNull, or } from 'drizzle-orm';
 
 import { logger } from '@/src/common/utils/logger';
 import { db } from '@/src/db/connection';
 import { instances } from '@/src/db/schema/schema';
 
 import { processCommandMessage } from './command-webhook.service';
+import {
+  connectWebjsInstance,
+  disconnectWebjsInstance,
+  isWebjsConnected,
+  isWebjsConnectionOpen,
+  logoutWebjsInstance,
+} from './webjs-manager';
 
-/**
- * Instance manager for Baileys v7 (https://baileys.wiki/docs/migration/to-v7.0.0).
- * - Uses ESM; auth state from useMultiFileAuthState supports LID keys (lid-mapping, device-list, tctoken).
- * - We do not send ACKs on message delivery (v7 removes this; WhatsApp may ban otherwise).
- * - sendMessage accepts both PN and LID JIDs; worker passes through job payload as-is.
- * - Baileys is given a silent logger so its logs (e.g. "connected to WA", "Buffer timeout reached") do not appear in the terminal.
- */
 const log = logger.child({ module: 'instance-manager' });
-/** Silent logger for Baileys to avoid terminal noise (connection, buffer timeout, pairing, etc.). */
 
 const DATA_DIR = join(process.cwd(), 'data', 'auth');
 const MAX_CONNECT_RETRIES = 3;
-/** Max retries when reconnecting after an already-open session (frequent disconnects). */
 const MAX_RECONNECT_RETRIES = 15;
 const RETRY_DELAY_MS = 5000;
-const MAX_RECONNECT_DELAY_MS = 120_000; // cap exponential backoff at 2 minutes
-/** Status codes that are worth retrying (transient/server failure or expected restart after pairing). */
-const RETRYABLE_STATUS_CODES = new Set([408, 500, 503, 515]); // connectionLost/timedOut, badSession, unavailableService, stream errored (restart required after pairing)
+const MAX_RECONNECT_DELAY_MS = 120_000;
+const RETRYABLE_STATUS_CODES = new Set([408, 500, 503, 515]);
 
 export type WsInstanceMessage =
   | { type: 'qr'; qr: string }
@@ -43,16 +40,14 @@ const sockets = new Map<number, WASocket>();
 const subscribers = new Map<number, Set<(msg: WsInstanceMessage) => void>>();
 const retryCount = new Map<number, number>();
 const openedInstances = new Set<number>();
-/** Ensures close handler runs only once per instance (Baileys may emit close twice). */
 const handlingClose = new Set<number>();
-/** Pending retry timeouts so we only have one retry per instance and can cancel on disconnect. */
 const retryTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 
 function getAuthPath(instanceId: number): string {
   return join(DATA_DIR, String(instanceId));
 }
 
-function notify(instanceId: number, msg: WsInstanceMessage) {
+export function notify(instanceId: number, msg: WsInstanceMessage) {
   const set = subscribers.get(instanceId);
   if (set) {
     set.forEach((cb) => {
@@ -97,6 +92,16 @@ function clearRetryTimeout(instanceId: number): void {
 }
 
 export async function connectInstance(instanceId: number, isRetry = false): Promise<void> {
+  const [inst] = await db
+    .select({ mode: instances.mode })
+    .from(instances)
+    .where(eq(instances.id, instanceId))
+    .limit(1);
+
+  if (inst?.mode === 'webjs') {
+    return connectWebjsInstance(instanceId);
+  }
+
   clearRetryTimeout(instanceId);
   if (sockets.has(instanceId)) {
     await disconnectInstance(instanceId);
@@ -117,7 +122,6 @@ export async function connectInstance(instanceId: number, isRetry = false): Prom
   notify(instanceId, { type: 'status', status: 'connecting' });
 
   const { state, saveCreds } = await useMultiFileAuthState(authPath);
-
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -228,6 +232,16 @@ export async function connectInstance(instanceId: number, isRetry = false): Prom
 }
 
 export async function disconnectInstance(instanceId: number): Promise<void> {
+  const [inst] = await db
+    .select({ mode: instances.mode })
+    .from(instances)
+    .where(eq(instances.id, instanceId))
+    .limit(1);
+
+  if (inst?.mode === 'webjs') {
+    return disconnectWebjsInstance(instanceId);
+  }
+
   clearRetryTimeout(instanceId);
   retryCount.delete(instanceId);
   openedInstances.delete(instanceId);
@@ -249,11 +263,17 @@ export async function disconnectInstance(instanceId: number): Promise<void> {
   log.info({ instanceId }, 'Instance disconnected');
 }
 
-/**
- * Logs out the instance: disconnects the socket and removes stored auth state.
- * Next connect will require scanning QR again.
- */
 export async function logoutInstance(instanceId: number): Promise<void> {
+  const [inst] = await db
+    .select({ mode: instances.mode })
+    .from(instances)
+    .where(eq(instances.id, instanceId))
+    .limit(1);
+
+  if (inst?.mode === 'webjs') {
+    return logoutWebjsInstance(instanceId);
+  }
+
   await disconnectInstance(instanceId);
   const authPath = getAuthPath(instanceId);
   try {
@@ -273,23 +293,18 @@ export function getSocket(instanceId: number): WASocket | undefined {
 }
 
 export function isConnected(instanceId: number): boolean {
-  return sockets.has(instanceId);
+  return sockets.has(instanceId) || isWebjsConnected(instanceId);
 }
 
-/** True when Baileys has emitted connection === 'open' (past AwaitingInitialSync). Use this before sending. */
 export function isConnectionOpen(instanceId: number): boolean {
-  return openedInstances.has(instanceId);
+  return openedInstances.has(instanceId) || isWebjsConnectionOpen(instanceId);
 }
 
-/**
- * On server restart, reconnects all instances that were previously connected (status = 'connected' in DB).
- * Sockets are lost on restart; this restores them from persisted auth state.
- */
 export async function reconnectPreviouslyConnectedInstances(): Promise<void> {
   const rows = await db
     .select({ id: instances.id })
     .from(instances)
-    .where(eq(instances.status, 'connected'));
+    .where(or(eq(instances.status, 'connected'), isNotNull(instances.authStatePath)));
   if (rows.length === 0) return;
   log.info(
     { count: rows.length, instanceIds: rows.map((r) => r.id) },

@@ -1,10 +1,8 @@
 import 'dotenv/config';
 
 import { jwtService } from '@/src/modules/auth/infrastructure/jwt/jwt.service';
-import {
-  reconnectPreviouslyConnectedInstances,
-  subscribe,
-} from '@/src/services/wa/instance-manager';
+import { initializeScheduler } from '@/src/services/scheduler/scheduler.service';
+import { subscribe } from '@/src/services/wa/instance-manager';
 
 import env from './config/env';
 import app from './index';
@@ -73,9 +71,7 @@ const server = Bun.serve<WSData>({
   },
 });
 
-startWorker();
+const worker = startWorker();
 scheduleJobsCleanup().catch((err) => console.error('Schedule jobs cleanup failed:', err));
-reconnectPreviouslyConnectedInstances().catch((err) =>
-  console.error('Reconnect of previously connected instances failed:', err)
-);
+initializeScheduler(worker).catch((err) => console.error('Initialize scheduler failed:', err));
 console.log(`BotWave server running at http://localhost:${server.port}`);

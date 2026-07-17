@@ -16,6 +16,7 @@ type Instance = {
   description: string | null;
   status: string;
   lastConnectedAt: string | null;
+  mode: 'baileys' | 'webjs';
   createdAt: string;
 };
 
@@ -77,7 +78,7 @@ function InstancesPage() {
   });
 
   const createMu = useMutation({
-    mutationFn: async (body: { name: string; description?: string }) => {
+    mutationFn: async (body: { name: string; description?: string; mode: 'baileys' | 'webjs' }) => {
       const { data } = await api<Instance>('/instances', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -165,6 +166,7 @@ function InstancesPage() {
           <thead>
             <tr className="border-b border-[var(--line)] bg-[var(--surface)]">
               <th className="p-3 text-left font-semibold text-[var(--sea-ink)]">Name</th>
+              <th className="p-3 text-left font-semibold text-[var(--sea-ink)]">Mode</th>
               <th className="p-3 text-left font-semibold text-[var(--sea-ink)]">Status</th>
               <th className="p-3 text-left font-semibold text-[var(--sea-ink)]">Last connected</th>
               <th className="p-3 text-right font-semibold text-[var(--sea-ink)]">Actions</th>
@@ -181,6 +183,11 @@ function InstancesPage() {
               list.map((inst) => (
                 <tr key={inst.id} className="border-b border-[var(--line)]">
                   <td className="p-3">{inst.name}</td>
+                  <td className="p-3">
+                    <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-800 uppercase">
+                      {inst.mode}
+                    </span>
+                  </td>
                   <td className="p-3">
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -512,11 +519,12 @@ function CreateInstanceModal({
   loading,
 }: {
   onClose: () => void;
-  onSubmit: (body: { name: string; description?: string }) => void;
+  onSubmit: (body: { name: string; description?: string; mode: 'baileys' | 'webjs' }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [mode, setMode] = useState<'baileys' | 'webjs'>('baileys');
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -529,7 +537,7 @@ function CreateInstanceModal({
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--surface)] px-3 py-2"
+              className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm"
             />
           </div>
           <div>
@@ -537,14 +545,24 @@ function CreateInstanceModal({
             <input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--surface)] px-3 py-2"
+              className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm"
             />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[var(--sea-ink)]">Mode</label>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as 'baileys' | 'webjs')}
+              className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--surface)] px-3 py-2 text-sm">
+              <option value="baileys">Baileys</option>
+              <option value="webjs">whatsapp-web.js</option>
+            </select>
           </div>
         </div>
         <div className="mt-4 flex gap-2">
           <button
             type="button"
-            onClick={() => onSubmit({ name, description: description || undefined })}
+            onClick={() => onSubmit({ name, description: description || undefined, mode })}
             disabled={!name || loading}
             className="rounded-lg bg-[var(--lagoon-deep)] px-4 py-2 text-sm text-white disabled:opacity-50">
             {loading ? 'Creating…' : 'Create'}

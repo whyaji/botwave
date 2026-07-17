@@ -10,6 +10,7 @@ import { getJobStatusRoutes } from './routes/get-job-status.route';
 import { instancesRoutes } from './routes/instances.routes';
 import { jobsRoutes } from './routes/jobs.routes';
 import { sendRoutes } from './routes/send.routes';
+import { settingsRoutes } from './routes/settings.routes';
 import { usersRoutes } from './routes/users.routes';
 
 const app = new Hono();
@@ -22,6 +23,7 @@ app.route('/api/users', usersRoutes);
 app.route('/api/instances', instancesRoutes);
 app.route('/api/apps', appsRoutes);
 app.route('/api/jobs', jobsRoutes);
+app.route('/api/settings', settingsRoutes);
 app.route('/api/v1/send', sendRoutes);
 app.route('/api/v1/get', getRoutes);
 app.route('/api/v1/jobs-status', getJobStatusRoutes);

@@ -53,6 +53,9 @@ function DashboardLayout() {
           <Link to="/jobs" className="nav-link rounded-lg px-3 py-2 text-sm">
             Jobs
           </Link>
+          <Link to="/settings" className="nav-link rounded-lg px-3 py-2 text-sm">
+            Settings
+          </Link>
         </nav>
         <div className="mt-auto pt-6">
           <p className="truncate px-3 text-xs text-[var(--sea-ink-soft)]">{user?.email}</p>

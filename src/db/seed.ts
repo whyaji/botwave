@@ -4,7 +4,7 @@ import { passwordService } from '@/src/modules/auth/infrastructure/password/pass
 
 import env from '../config/env';
 import { db } from './connection';
-import { users } from './schema/schema';
+import { settings, users } from './schema/schema';
 
 async function seed() {
   const email = env.SUPERADMIN_EMAIL;
@@ -23,6 +23,24 @@ async function seed() {
     .onConflictDoNothing({ target: users.email });
 
   console.log('Seeder done. Superadmin:', email);
+
+  await db
+    .insert(settings)
+    .values({
+      key: 'DELAY_SENDING_SECONDS',
+      value: '15',
+    })
+    .onConflictDoNothing({ target: settings.key });
+
+  await db
+    .insert(settings)
+    .values({
+      key: 'INACTIVE_SCHEDULED',
+      value: '',
+    })
+    .onConflictDoNothing({ target: settings.key });
+
+  console.log('Seeder settings seeded successfully');
   process.exit(0);
 }
 
